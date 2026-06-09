@@ -33,7 +33,7 @@ fi
 if [[ -z "$DOWNSTREAM_BRANCH" ]]; then
   echo "Missing \$DOWNSTREAM_BRANCH"
   echo "Default to ${UPSTREAM_BRANCH}"
-  DOWNSTREAM_BREANCH=UPSTREAM_BRANCH
+  DOWNSTREAM_BRANCH=$UPSTREAM_BRANCH
 fi
 
 if ! echo "$UPSTREAM_REPO" | grep '\.git'; then
@@ -106,13 +106,53 @@ else
   MERGE_RESULT=$(git merge ${MERGE_ARGS} upstream/${UPSTREAM_BRANCH} 2>&1)
 fi
 
-echo $MERGE_RESULT
+echo "$MERGE_RESULT"
 
-if [[ $MERGE_RESULT == "" ]] || [[ $MERGE_RESULT == *"merge failed"* ]] || [[ $MERGE_RESULT == *"error:"* ]] || [[ $MERGE_RESULT == *"Aborting"* ]] || [[ $MERGE_RESULT == *"CONFLICT ("* ]]
-then
+if [[ $MERGE_RESULT == "" ]] || [[ $MERGE_RESULT == *"merge failed"* ]] || [[ $MERGE_RESULT == *"error:"* ]] || [[ $MERGE_RESULT == *"Aborting"* ]]; then
   exit 1
-elif [[ $MERGE_RESULT != *"Already up to date."* ]]
-then
+elif [[ $MERGE_RESULT == *"CONFLICT ("* ]]; then
+  if [[ -z "$IGNORE_FILES" ]]; then
+    echo "Merge conflicts detected and no exclusion patterns to resolve them"
+    exit 1
+  fi
+
+  echo "Conflicts detected, attempting to auto-resolve conflicts on excluded files..."
+  UNMERGED_FILES=$(git diff --name-only --diff-filter=U)
+  HAS_UNRESOLVABLE=false
+
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    MATCHED=false
+    for exclusion in "${exclusions[@]}"; do
+      if [[ "$file" == $exclusion ]]; then
+        MATCHED=true
+        break
+      fi
+    done
+
+    if $MATCHED; then
+      echo "Auto-resolving excluded file: $file"
+      if git show :2:"$file" > /dev/null 2>&1; then
+        git checkout --ours "$file"
+        git add "$file"
+      else
+        git rm -f "$file"
+      fi
+    else
+      echo "Unresolvable conflict on: $file"
+      HAS_UNRESOLVABLE=true
+    fi
+  done <<< "$UNMERGED_FILES"
+
+  if $HAS_UNRESOLVABLE; then
+    echo "Unresolvable conflicts remain, aborting"
+    exit 1
+  fi
+
+  echo "All conflicts on excluded files resolved"
+  git commit --no-edit -m "Merged upstream"
+  git push ${PUSH_ARGS} origin ${DOWNSTREAM_BRANCH} || exit $?
+elif [[ $MERGE_RESULT != *"Already up to date."* ]]; then
   git commit -m "Merged upstream"
   git push ${PUSH_ARGS} origin ${DOWNSTREAM_BRANCH} || exit $?
 fi
