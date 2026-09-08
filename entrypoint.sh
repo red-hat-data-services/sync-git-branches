@@ -87,7 +87,32 @@ case ${SPAWN_LOGS} in
   (false)   echo "Not spawning time logs"
 esac
 
-git push origin ${DOWNSTREAM_BRANCH}
+push_spawn_log() {
+  local push_output
+
+  if push_output=$(git push ${PUSH_ARGS} origin "${DOWNSTREAM_BRANCH}" 2>&1); then
+    echo "$push_output"
+    return 0
+  fi
+
+  echo "$push_output"
+  if [[ "$push_output" != *"non-fast-forward"* ]] && [[ "$push_output" != *"fetch first"* ]]; then
+    return 1
+  fi
+
+  echo "Downstream branch advanced while publishing the activity log; rebasing the log commit"
+  if ! git fetch origin "${DOWNSTREAM_BRANCH}"; then
+    return 1
+  fi
+  if ! git rebase "origin/${DOWNSTREAM_BRANCH}"; then
+    return 1
+  fi
+  git push ${PUSH_ARGS} origin "${DOWNSTREAM_BRANCH}"
+}
+
+if [[ "$SPAWN_LOGS" == true ]]; then
+  push_spawn_log || exit $?
+fi
 
 
 IFS=', ' read -r -a exclusions <<< "$IGNORE_FILES"
@@ -133,12 +158,47 @@ restore_excluded_files() {
   fi
 }
 
+push_downstream() {
+  local push_output
+
+  if push_output=$(git push ${PUSH_ARGS} origin "${DOWNSTREAM_BRANCH}" 2>&1); then
+    echo "$push_output"
+    return 0
+  fi
+
+  echo "$push_output"
+  if [[ "$push_output" != *"non-fast-forward"* ]] && [[ "$push_output" != *"fetch first"* ]]; then
+    return 1
+  fi
+
+  echo "Downstream branch advanced during sync; merging the remote changes before retrying"
+  if ! git fetch origin "${DOWNSTREAM_BRANCH}"; then
+    return 1
+  fi
+
+  if ! git merge ${MERGE_ARGS} "origin/${DOWNSTREAM_BRANCH}"; then
+    echo "Unable to merge the latest downstream branch; aborting"
+    git merge --abort >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  if push_output=$(git push ${PUSH_ARGS} origin "${DOWNSTREAM_BRANCH}" 2>&1); then
+    echo "$push_output"
+    return 0
+  fi
+
+  echo "$push_output"
+  return 1
+}
+
 if [[ -n "$UPSTREAM_TAG" ]]; then
   echo "UPSTREAM_TAG=$UPSTREAM_TAG"
   echo "Upstream tag is defined, pulling from tag $UPSTREAM_TAG instead of branch $UPSTREAM_BRANCH"
-  MERGE_RESULT=$(git merge ${MERGE_ARGS} tags/${UPSTREAM_TAG} 2>&1)
+  MERGE_TARGET="tags/${UPSTREAM_TAG}"
+  MERGE_RESULT=$(git merge ${MERGE_ARGS} "$MERGE_TARGET" 2>&1)
 else
-  MERGE_RESULT=$(git merge ${MERGE_ARGS} upstream/${UPSTREAM_BRANCH} 2>&1)
+  MERGE_TARGET="upstream/${UPSTREAM_BRANCH}"
+  MERGE_RESULT=$(git merge ${MERGE_ARGS} "$MERGE_TARGET" 2>&1)
 fi
 
 echo "$MERGE_RESULT"
@@ -185,13 +245,13 @@ if [[ $MERGE_RESULT == *"CONFLICT ("* ]]; then
   echo "All conflicts on excluded files resolved"
   git commit --no-edit -m "Merged upstream"
   restore_excluded_files
-  git push ${PUSH_ARGS} origin ${DOWNSTREAM_BRANCH} || exit $?
+  push_downstream || exit $?
 elif [[ $MERGE_RESULT == "" ]] || [[ $MERGE_RESULT == *"merge failed"* ]] || [[ $MERGE_RESULT == *"error:"* ]] || [[ $MERGE_RESULT == *"Aborting"* ]]; then
   exit 1
 elif [[ $MERGE_RESULT != *"Already up to date."* ]]; then
   git commit -m "Merged upstream"
   restore_excluded_files
-  git push ${PUSH_ARGS} origin ${DOWNSTREAM_BRANCH} || exit $?
+  push_downstream || exit $?
 fi
 
 cd ..
