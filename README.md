@@ -71,6 +71,8 @@ Note: If `SPAWN_LOGS` is set to `true`, this action will create a `sync-upstream
 
 ## Development
 
+For private repositories, the `token` input must have read access to the upstream and downstream repositories (including repository metadata for automatic default-branch discovery) and write access to the downstream repository. The action uses this token for GitHub HTTPS clone, fetch, and push without embedding it in remote URLs.
+
 In [`action.yml`](https://github.com/dabreadman/sync-upstream-repo/blob/master/action.yml), we define `inputs`.  
 We then pass these arguments into [`Dockerfile`](https://github.com/dabreadman/sync-upstream-repo/blob/master/Dockerfile), which then passed onto [`entrypoint.sh`](https://github.com/dabreadman/sync-upstream-repo/blob/master/entrypoint.sh).
 
