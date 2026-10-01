@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 
-set -x
-
 UPSTREAM_REPO=$1
 UPSTREAM_BRANCH=$2
 DOWNSTREAM_BRANCH=$3
-GITHUB_TOKEN=$4
+export GITHUB_TOKEN="$4"
 FETCH_ARGS=$5
 MERGE_ARGS=$6
 PUSH_ARGS=$7
@@ -26,7 +24,14 @@ then
   REPO_NAME=${UPSTREAM_REPO/https:\/\/github.com\//}
   REPO_NAME=${REPO_NAME%.git}
   echo "REPO_NAME=$REPO_NAME"
-  UPSTREAM_BRANCH=$(curl -s https://api.github.com/repos/$REPO_NAME | jq -r '.default_branch')
+  REPO_DETAILS=$(curl -fsS -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO_NAME}") || {
+    echo "Could not retrieve upstream repository details"
+    exit 1
+  }
+  UPSTREAM_BRANCH=$(jq -er '.default_branch | select(type == "string" and length > 0)' <<< "$REPO_DETAILS") || {
+    echo "Could not determine upstream default branch"
+    exit 1
+  }
   echo "UPSTREAM_BRANCH=$UPSTREAM_BRANCH"
 fi
 
@@ -42,22 +47,19 @@ fi
 
 echo "UPSTREAM_REPO=$UPSTREAM_REPO"
 
+GITHUB_CREDENTIAL_HELPER='!f() { if [ "$1" = get ]; then printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"; fi; }; f'
+
 if [[ $DOWNSTREAM_REPO == "GITHUB_REPOSITORY" ]]
 then
-  git clone "https://github.com/${GITHUB_REPOSITORY}.git" work
-  cd work || { echo "Missing work dir" && exit 2 ; }
-  git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-else
-  git clone $DOWNSTREAM_REPO work
-  cd work || { echo "Missing work dir" && exit 2 ; }
-  git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${DOWNSTREAM_REPO/https:\/\/github.com\//}"
+  DOWNSTREAM_REPO="https://github.com/${GITHUB_REPOSITORY}.git"
 fi
 
+git clone -c "credential.https://github.com.helper=$GITHUB_CREDENTIAL_HELPER" "$DOWNSTREAM_REPO" work || exit 2
+cd work || { echo "Missing work dir" && exit 2 ; }
 
 
 git config user.name "${GITHUB_ACTOR}"
 git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
-git config --local user.password ${GITHUB_TOKEN}
 git config --global merge.ours.driver true
 
 if [[ -n "$UPSTREAM_SSH_KEY" ]]; then
