@@ -49,6 +49,10 @@ inputs:
     description: Upstream tag to sync from. Note this overrides the upstream branch option.
     required: false
     default: ""
+  dry_run:
+    description: Perform the merge and excluded-file restoration locally without pushing any changes
+    required: false
+    default: "false"
 
 runs:
   using: "docker"
@@ -66,6 +70,7 @@ runs:
     - ${{ inputs.ignore_files }}
     - ${{ inputs.upstream_ssh_key }}
     - ${{ inputs.upstream_tag }}
+    - ${{ inputs.dry_run }}
 
 branding:
   icon: "git-merge"
