@@ -12,6 +12,24 @@ DOWNSTREAM_REPO=$9
 IGNORE_FILES=${10}
 UPSTREAM_SSH_KEY=${11}
 UPSTREAM_TAG=${12}
+DRY_RUN=${13:-false}
+
+case "$DRY_RUN" in
+  true|false) ;;
+  *) echo "dry_run must be 'true' or 'false'"; exit 1 ;;
+esac
+
+push_downstream() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "Dry run: skipping push to downstream branch $DOWNSTREAM_BRANCH"
+    return 0
+  fi
+  git push "$@" origin "$DOWNSTREAM_BRANCH"
+}
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  echo "Dry run enabled: merging and restoring excluded files locally; all pushes are skipped."
+fi
 
 if [[ -z "$UPSTREAM_REPO" ]]; then
   echo "Missing \$UPSTREAM_REPO"
@@ -89,7 +107,7 @@ case ${SPAWN_LOGS} in
   (false)   echo "Not spawning time logs"
 esac
 
-git push origin ${DOWNSTREAM_BRANCH}
+push_downstream
 
 
 IFS=', ' read -r -a exclusions <<< "$IGNORE_FILES"
@@ -187,13 +205,17 @@ if [[ $MERGE_RESULT == *"CONFLICT ("* ]]; then
   echo "All conflicts on excluded files resolved"
   git commit --no-edit -m "Merged upstream"
   restore_excluded_files
-  git push ${PUSH_ARGS} origin ${DOWNSTREAM_BRANCH} || exit $?
+  push_downstream ${PUSH_ARGS} || exit $?
 elif [[ $MERGE_RESULT == "" ]] || [[ $MERGE_RESULT == *"merge failed"* ]] || [[ $MERGE_RESULT == *"error:"* ]] || [[ $MERGE_RESULT == *"Aborting"* ]]; then
   exit 1
 elif [[ $MERGE_RESULT != *"Already up to date."* ]]; then
   git commit -m "Merged upstream"
   restore_excluded_files
-  git push ${PUSH_ARGS} origin ${DOWNSTREAM_BRANCH} || exit $?
+  push_downstream ${PUSH_ARGS} || exit $?
+fi
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  echo "Dry run completed: no changes were pushed."
 fi
 
 cd ..

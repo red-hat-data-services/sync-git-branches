@@ -69,9 +69,44 @@ Do note GitHub Action scheduled workflow usually face delay as it is pushed onto
 
 Note: If `SPAWN_LOGS` is set to `true`, this action will create a `sync-upstream-repo` file at root directory with timestamps of when the action is ran. This is to mitigate the hassle of GitHub disabling actions for a repo when inactivity was detected.
 
+## Dry run
+
+Set `dry_run: "true"` to execute the existing sync locally without pushing to a
+remote repository. It defaults to `"false"`; omitted inputs perform normal syncs.
+
+```yaml
+- name: Check main-to-release merge feasibility
+  uses: red-hat-data-services/sync-git-branches@main
+  with:
+    upstream_repo: https://github.com/red-hat-data-services/COMPONENT.git
+    upstream_branch: main
+    downstream_repo: https://github.com/red-hat-data-services/COMPONENT.git
+    downstream_branch: rhoai-3.6
+    token: ${{ secrets.READ_TOKEN }}
+    ignore_files: '.tekton/*, .github/renovate.json, .tekton/README.md'
+    dry_run: "true"
+```
+
+Cloning, fetching, merging, conflict resolution, excluded-file restoration, and
+local commits/amendments run as usual in the disposable `work` clone. Every push
+is skipped, including the initial push and pushes after conflict resolution.
+`spawn_logs: "true"` stays local too. Logs identify each skipped push.
+
+Dry runs retain the action's existing merge-error handling and exit-status
+behavior. Unresolved conflicts still fail the run. `dry_run` accepts only
+`"true"` or `"false"`.
+
+Dry-run credentials need only read access to both repositories, including
+repository metadata when discovering the upstream default branch. A dry run
+checks local merge feasibility; branch rules, push permissions and races with
+later remote updates are evaluated when a real sync pushes.
+
+Passing `--no-commit` as `merge_args`, or `--dry-run` as `push_args`, is not a
+replacement for this input. Only `dry_run: "true"` suppresses every push.
+
 ## Development
 
-For private repositories, the `token` input must have read access to the upstream and downstream repositories (including repository metadata for automatic default-branch discovery) and write access to the downstream repository. The action uses this token for GitHub HTTPS clone, fetch, and push without embedding it in remote URLs.
+For normal syncs of private repositories, the `token` input must have read access to the upstream and downstream repositories (including repository metadata for automatic default-branch discovery) and write access to the downstream repository. The action uses this token for GitHub HTTPS clone, fetch, and push without embedding it in remote URLs.
 
 In [`action.yml`](https://github.com/dabreadman/sync-upstream-repo/blob/master/action.yml), we define `inputs`.  
 We then pass these arguments into [`Dockerfile`](https://github.com/dabreadman/sync-upstream-repo/blob/master/Dockerfile), which then passed onto [`entrypoint.sh`](https://github.com/dabreadman/sync-upstream-repo/blob/master/entrypoint.sh).
@@ -83,3 +118,10 @@ We then pass these arguments into [`Dockerfile`](https://github.com/dabreadman/s
 - Clone downstream repository.
 - Fetch upstream repository.
 - Attempt merge if behind, and push to downstream.
+
+Local checks (Git and Bash required; tests use temporary local repositories):
+
+```bash
+bash -n entrypoint.sh
+uv run --no-project --python 3.12 python -m unittest discover -s tests -v
+```
