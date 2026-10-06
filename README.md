@@ -104,6 +104,15 @@ later remote updates are evaluated when a real sync pushes.
 Passing `--no-commit` as `merge_args`, or `--dry-run` as `push_args`, is not a
 replacement for this input. Only `dry_run: "true"` suppresses every push.
 
+## Temporary checkout cleanup
+
+After a completed sync or dry run, removal of the temporary `work` checkout is
+attempted up to three times, with a one-second delay between failed attempts.
+If removal still fails, the action emits a warning and retains the completed
+sync result. A housekeeping error such as `work/.git: Directory not empty` does
+not make a successful merge check fail. Existing merge-conflict and push-failure
+exits are unchanged.
+
 ## Development
 
 For normal syncs of private repositories, the `token` input must have read access to the upstream and downstream repositories (including repository metadata for automatic default-branch discovery) and write access to the downstream repository. The action uses this token for GitHub HTTPS clone, fetch, and push without embedding it in remote URLs.

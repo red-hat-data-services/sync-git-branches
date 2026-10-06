@@ -219,4 +219,16 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 cd ..
-rm -rf work
+# Temporary Git files can race with deletion. Cleanup must not turn a completed
+# sync into a failure. Existing merge/push failure exits are unchanged.
+for attempt in 1 2 3; do
+  if rm -rf work; then
+    break
+  fi
+  if [[ $attempt -eq 3 ]]; then
+    echo "::warning::Could not remove temporary checkout after 3 attempts; sync result retained."
+  else
+    echo "Cleanup attempt $attempt failed; retrying in 1 second."
+    sleep 1
+  fi
+done

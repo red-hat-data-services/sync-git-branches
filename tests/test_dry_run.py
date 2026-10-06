@@ -95,6 +95,32 @@ class DryRunTests(unittest.TestCase):
             for file in self.origin.rglob("*") if file.is_file()
         }
 
+    def fail_cleanup(self, failures: int) -> Path:
+        """Inject the reported ENOTEMPTY failure without relying on a timing race."""
+        attempts = self.root / "cleanup-attempts"
+        attempts.write_text("0\n", encoding="utf-8")
+        wrapper = self.bin / "rm"
+        wrapper.write_text(
+            '#!/usr/bin/env bash\n'
+            'if [[ "$*" == "-rf work" ]]; then\n'
+            '  read -r attempts < "$CLEANUP_ATTEMPTS"\n'
+            '  attempts=$((attempts + 1))\n'
+            '  printf "%s\\n" "$attempts" > "$CLEANUP_ATTEMPTS"\n'
+            '  if [[ "$attempts" -le "$CLEANUP_FAILURES" ]]; then\n'
+            '    echo "rm: can\'t remove work/.git: Directory not empty" >&2\n'
+            '    exit 1\n'
+            '  fi\n'
+            'fi\n'
+            'exec "$REAL_RM" "$@"\n', encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        self.env.update({
+            "REAL_RM": shutil.which("rm"),
+            "CLEANUP_ATTEMPTS": str(attempts),
+            "CLEANUP_FAILURES": str(failures),
+        })
+        return attempts
+
     def run_action(
         self, *, dry_run: str | None = "true", source: str = "main", target: str = RELEASE,
         ignore: str = "", merge_args: str = "--no-edit", push_args: str = "",
@@ -292,6 +318,78 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertNotIn("Dry run completed", result.stdout)
         self.assertEqual(self.push_log.read_text(), "")
+
+    def test_transient_cleanup_failure_retries_without_failing_sync(self) -> None:
+        for mode in ("true", "false"):
+            with self.subTest(dry_run=mode):
+                self.new_repository(f"transient-{mode}")
+                if mode == "false":
+                    self.commit_file("code.txt", "incoming\n")
+                self.publish()
+                before = self.snapshot()
+                attempts = self.fail_cleanup(1)
+                result = self.run_action(dry_run=mode)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Directory not empty", result.stderr)
+                self.assertIn("Cleanup attempt 1 failed; retrying", result.stdout)
+                self.assertEqual(attempts.read_text().strip(), "2")
+                self.assertNotIn("::warning::", result.stdout)
+                self.assertFalse((self.action_dir / "work").exists())
+                if mode == "true":
+                    self.assertIn("Already up to date", result.stdout)
+                    self.assert_dry_success(result, before)
+                else:
+                    self.assertEqual(self.git("--git-dir", str(self.origin), "show", f"{RELEASE}:code.txt"), "incoming")
+
+    def test_persistent_cleanup_failure_warns_after_bounded_retries(self) -> None:
+        for mode in ("true", "false"):
+            with self.subTest(dry_run=mode):
+                self.new_repository(f"persistent-{mode}")
+                self.commit_file("code.txt", "incoming\n")
+                self.publish()
+                before = self.snapshot()
+                attempts = self.fail_cleanup(99)
+                result = self.run_action(dry_run=mode)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(attempts.read_text().strip(), "3")
+                self.assertIn("::warning::Could not remove temporary checkout after 3 attempts", result.stdout)
+                self.assertTrue((self.action_dir / "work/.git").is_dir())
+                if mode == "true":
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(self.push_log.read_text(), "")
+                else:
+                    self.assertEqual(self.git("--git-dir", str(self.origin), "show", f"{RELEASE}:code.txt"), "incoming")
+
+    def test_cleanup_handling_does_not_mask_merge_conflict(self) -> None:
+        self.commit_file("code.txt", "base\n")
+        self.git("branch", "-f", RELEASE)
+        self.commit_file("code.txt", "source\n")
+        self.git("checkout", RELEASE)
+        self.commit_file("code.txt", "release\n")
+        self.publish()
+        before = self.snapshot()
+        attempts = self.fail_cleanup(99)
+        result = self.run_action()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Merge conflicts detected", result.stdout)
+        self.assertEqual(attempts.read_text().strip(), "0")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.push_log.read_text(), "")
+
+    def test_cleanup_handling_does_not_mask_push_failure(self) -> None:
+        self.commit_file("code.txt", "incoming\n")
+        self.publish()
+        hook = self.origin / "hooks/pre-receive"
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        before = self.git("--git-dir", str(self.origin), "rev-parse", RELEASE)
+        attempts = self.fail_cleanup(99)
+        result = self.run_action(dry_run="false")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pre-receive hook declined", result.stderr)
+        self.assertEqual(attempts.read_text().strip(), "0")
+        self.assertEqual(self.git("--git-dir", str(self.origin), "rev-parse", RELEASE), before)
 
 
 if __name__ == "__main__":
